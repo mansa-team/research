@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import requests
+
 from sklearn.pipeline import Pipeline
 
 from skfolio.pre_selection import DropCorrelated, DropZeroVariance, SelectKExtremes
@@ -22,8 +23,6 @@ RISK_FREE_RATE = float(selic['valor'].iloc[-1]) / 100
 df = pd.read_json("b3_stocks.json")
 df = df[(df["VALUE INVESTING SCORE"] > 60) & (df["TICKER"].str.endswith("3"))]
 
-print(df['TICKER'].tolist())
-
 price_data = [
     {"TICKER": row["TICKER"], "DATA": price_entry["DATA"], "PRECO": price_entry["PRECO"]}
     for _, row in df.iterrows() for price_entry in row["COTACAO 10Y AJUSTADA"]
@@ -35,15 +34,12 @@ X_prices_all = price_p.resample("ME").last().ffill().dropna(axis=1)
 X_returns_candidates = prices_to_returns(X_prices_all)
 
 all_tickers = X_returns_candidates.columns.tolist()
-print(f"Initial candidates: {len(all_tickers)} stocks")
 
-# Use sklearn Pipeline
 pre_selection = Pipeline([
     ("drop_zero_var", DropZeroVariance()),
-    ("drop_corr", DropCorrelated(threshold=0.95, absolute=True)),
+    ("drop_corr", DropCorrelated(threshold=0.67, absolute=True)),
     ("select_k", SelectKExtremes(k=N_STOCKS, measure=PerfMeasure.MEAN, highest=True)),
 ])
-
 pre_selection.fit(X_returns_candidates)
 
 steps = list(pre_selection.named_steps.values())
@@ -57,12 +53,12 @@ scores = df.set_index("TICKER")["VALUE INVESTING SCORE"].reindex(selected_ticker
 w_base = scores.values / scores.sum()
 
 model = MeanRisk(
-    objective_function=ObjectiveFunction.MAXIMIZE_RETURN,
+    objective_function=ObjectiveFunction.MAXIMIZE_UTILITY,
     prior_estimator=EmpiricalPrior(
         covariance_estimator=LedoitWolf()
     ),
-    risk_aversion=0.35,
-    l2_coef=0.01,
+    risk_aversion=0.30,
+    l2_coef=0.05,
     target_weights=w_base,
     max_weights=0.08,
     min_weights=0.033,
@@ -72,7 +68,7 @@ weights = model.weights_
 
 results = pd.DataFrame({
     "TICKER": X_returns_selected.columns,
-    "WEIGHT": (weights / weights.sum() * 1000).astype(int)
+    "WEIGHT": (weights / weights.sum() * 1000).round(2).astype(int)
 }).sort_values("WEIGHT", ascending=False)
 
 results["ALLOCATION (%)"] = (results["WEIGHT"] / results["WEIGHT"].sum() * 100).round(4)
@@ -134,7 +130,5 @@ if generate_graphs:
     plt.savefig("efficient_frontier.png", dpi=150)
     plt.close()
 
-    print(f"return: {opt_return * 12 * 100:.2f}%")
+    print(f"\nreturn: {opt_return * 12 * 100:.2f}%")
     print(f"volatility: {opt_vol * np.sqrt(12) * 100:.2f}%")
-
-    # ma'at 1
