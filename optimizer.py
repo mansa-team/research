@@ -27,6 +27,7 @@ price_data = [
     {"TICKER": row["TICKER"], "DATA": price_entry["DATA"], "PRECO": price_entry["PRECO"]}
     for _, row in df.iterrows() for price_entry in row["COTACAO 10Y AJUSTADA"]
 ]
+
 price_p = pd.DataFrame(price_data).pivot_table(index="DATA", columns="TICKER", values="PRECO", aggfunc="last")
 price_p.index = pd.to_datetime(price_p.index, dayfirst=True)
 
@@ -39,8 +40,7 @@ pre_selection = Pipeline([
     ("drop_zero_var", DropZeroVariance()),
     ("drop_corr", DropCorrelated(threshold=0.67, absolute=True)),
     ("select_k", SelectKExtremes(k=N_STOCKS, measure=PerfMeasure.MEAN, highest=True)),
-])
-pre_selection.fit(X_returns_candidates)
+]).fit(X_returns_candidates)
 
 steps = list(pre_selection.named_steps.values())
 selected_tickers = all_tickers
@@ -60,10 +60,9 @@ model = MeanRisk(
     risk_aversion=0.30,
     l2_coef=0.05,
     target_weights=w_base,
-    max_weights=0.08,
-    min_weights=0.033,
-)
-model.fit(X_returns_selected)
+    max_weights=100 / N_STOCKS / 100 * 1.5,
+    min_weights=100 / N_STOCKS / 100 * 0.5
+).fit(X_returns_selected)
 weights = model.weights_
 
 results = pd.DataFrame({
@@ -86,7 +85,6 @@ if generate_graphs:
     sns.heatmap(corr_matrix, cmap="coolwarm", center=0, annot=True, 
                 fmt=".2f", xticklabels=True, yticklabels=True,
                 cbar_kws={"label": "Correlation"})
-    plt.title("Stock Correlation Heatmap", fontsize=14)
     plt.tight_layout()
     plt.savefig("corr_heatmap.png", dpi=150)
     plt.close()
