@@ -5,6 +5,7 @@ import seaborn as sns
 import requests
 
 from sklearn.pipeline import Pipeline
+from sklearn.model_selection import TimeSeriesSplit
 
 from skfolio.pre_selection import DropCorrelated, DropZeroVariance, SelectKExtremes
 from skfolio.optimization import MeanRisk, ObjectiveFunction
@@ -13,19 +14,28 @@ from skfolio.preprocessing import prices_to_returns
 from skfolio.moments.covariance import LedoitWolf
 from skfolio.measures import PerfMeasure
 
+import time
+start_time = time.time() 
+
 np.random.seed(42)
 
-selic = pd.DataFrame(requests.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados?formato=json").json())
+# selic = pd.DataFrame(requests.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados?formato=json").json())
 
 N_STOCKS = 18
-RISK_FREE_RATE = float(selic['valor'].iloc[-1]) / 100
+RISK_FREE_RATE = 0.14
+# RISK_FREE_RATE = float(selic['valor'].iloc[-1]) / 100
+
+param_grid = {
+    'risk_aversion': np.linspace(0.20, 0.60, 3),
+    'l2_coef': np.logspace(-2, -1, 3),
+}
 
 df = pd.read_json("b3_stocks.json")
 df = df[(df["VALUE INVESTING SCORE"] > 60) & (df["TICKER"].str.endswith("3"))]
 
 price_data = [
-    {"TICKER": row["TICKER"], "DATA": price_entry["DATA"], "PRECO": price_entry["PRECO"]}
-    for _, row in df.iterrows() for price_entry in row["COTACAO 10Y AJUSTADA"]
+    {"TICKER": row["TICKER"], "DATA": p["DATA"], "PRECO": p["PRECO"]}
+    for _, row in df.iterrows() for p in row["COTACAO 10Y AJUSTADA"]
 ]
 
 price_p = pd.DataFrame(price_data).pivot_table(index="DATA", columns="TICKER", values="PRECO", aggfunc="last")
@@ -40,7 +50,50 @@ pre_selection = Pipeline([
     ("drop_zero_var", DropZeroVariance()),
     ("drop_corr", DropCorrelated(threshold=0.67, absolute=True)),
     ("select_k", SelectKExtremes(k=N_STOCKS, measure=PerfMeasure.MEAN, highest=True)),
-]).fit(X_returns_candidates)
+])
+
+tscv = TimeSeriesSplit(n_splits=3)
+cv_results = []
+for fold, (train_idx, test_idx) in enumerate(tscv.split(X_returns_candidates)):
+    X_train_full, X_test_full = X_returns_candidates.iloc[train_idx], X_returns_candidates.iloc[test_idx]
+    
+    pre_selection.fit(X_train_full)
+    
+    steps = list(pre_selection.named_steps.values())
+    fold_tickers = all_tickers
+    for step in steps:
+        fold_tickers = [t for t, m in zip(fold_tickers, step.get_support()) if m]
+    
+    X_train, X_test = X_train_full[fold_tickers], X_test_full[fold_tickers]
+    scores = df.set_index("TICKER")["VALUE INVESTING SCORE"].reindex(fold_tickers)
+    w_base = scores.values / scores.sum()
+    
+    for ra in param_grid['risk_aversion']:
+        for l2 in param_grid['l2_coef']:
+            try:
+                model = MeanRisk(
+                    objective_function=ObjectiveFunction.MAXIMIZE_UTILITY,
+                    prior_estimator=EmpiricalPrior(covariance_estimator=LedoitWolf()),
+                    risk_aversion=ra,
+                    l2_coef=l2,
+                    target_weights=w_base,
+                    max_weights=1.5/N_STOCKS,
+                    min_weights=0.5/N_STOCKS,
+                ).fit(X_train)
+                
+                test_returns = X_test @ model.weights_
+                sharpe = (test_returns.mean() * 12 - RISK_FREE_RATE) / (test_returns.std() * np.sqrt(12))
+                
+                cv_results.append({'ra': ra, 'l2': l2, 'sharpe': sharpe})
+            except:
+                pass
+
+cv_df = pd.DataFrame(cv_results)
+best_ra, best_l2 = cv_df.groupby(['ra', 'l2'])['sharpe'].mean().idxmax()
+
+print(f"ra: {best_ra:.2f} | l2: {best_l2:.4f} | sharpe: {cv_df[cv_df['ra']==best_ra]['sharpe'].mean():.4f}")
+
+pre_selection.fit(X_returns_candidates)
 
 steps = list(pre_selection.named_steps.values())
 selected_tickers = all_tickers
@@ -54,14 +107,12 @@ w_base = scores.values / scores.sum()
 
 model = MeanRisk(
     objective_function=ObjectiveFunction.MAXIMIZE_UTILITY,
-    prior_estimator=EmpiricalPrior(
-        covariance_estimator=LedoitWolf()
-    ),
-    risk_aversion=0.30,
-    l2_coef=0.05,
+    prior_estimator=EmpiricalPrior(covariance_estimator=LedoitWolf()),
+    risk_aversion=best_ra,
+    l2_coef=best_l2,
     target_weights=w_base,
-    max_weights=100 / N_STOCKS / 100 * 1.5,
-    min_weights=100 / N_STOCKS / 100 * 0.5
+    max_weights=1.5/N_STOCKS,
+    min_weights=0.5/N_STOCKS,
 ).fit(X_returns_selected)
 weights = model.weights_
 
@@ -89,7 +140,7 @@ if generate_graphs:
     plt.savefig("corr_heatmap.png", dpi=150)
     plt.close()
 
-    n_portfolios = 1000
+    n_portfolios = 10000
     m = len(selected_tickers)
     random_weights = np.random.dirichlet(np.ones(m), n_portfolios)
 
@@ -130,3 +181,5 @@ if generate_graphs:
 
     print(f"\nreturn: {opt_return * 12 * 100:.2f}%")
     print(f"volatility: {opt_vol * np.sqrt(12) * 100:.2f}%")
+
+print(f"\nelapsed: {time.time() - start_time:.2f}s")
