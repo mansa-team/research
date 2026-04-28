@@ -3,22 +3,26 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import requests
+from sklearn.pipeline import Pipeline
 
+from skfolio.pre_selection import DropCorrelated, DropZeroVariance, SelectKExtremes
 from skfolio.optimization import MeanRisk, ObjectiveFunction
 from skfolio.prior import EmpiricalPrior
 from skfolio.preprocessing import prices_to_returns
 from skfolio.moments.covariance import LedoitWolf
+from skfolio.measures import PerfMeasure
 
 np.random.seed(42)
 
 selic = pd.DataFrame(requests.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados?formato=json").json())
 
 N_STOCKS = 18
-K_MULTIPLIER = 3
 RISK_FREE_RATE = float(selic['valor'].iloc[-1]) / 100
 
 df = pd.read_json("b3_stocks.json")
 df = df[(df["VALUE INVESTING SCORE"] > 60) & (df["TICKER"].str.endswith("3"))]
+
+print(df['TICKER'].tolist())
 
 price_data = [
     {"TICKER": row["TICKER"], "DATA": price_entry["DATA"], "PRECO": price_entry["PRECO"]}
@@ -27,43 +31,57 @@ price_data = [
 price_p = pd.DataFrame(price_data).pivot_table(index="DATA", columns="TICKER", values="PRECO", aggfunc="last")
 price_p.index = pd.to_datetime(price_p.index, dayfirst=True)
 
-# picks the top scoring stocks (no corr based)
-# need to update the file to be used after the picker as been made so i can optimize the weights arround it with a proper weight balancing model (hierarchical risk parity)
-K = K_MULTIPLIER * N_STOCKS
-top_k_tickers = df.sort_values("VALUE INVESTING SCORE", ascending=False).head(K)["TICKER"]
-X_prices = price_p[top_k_tickers].resample("ME").last().ffill().dropna(axis=1)
-X_returns = prices_to_returns(X_prices)
+X_prices_all = price_p.resample("ME").last().ffill().dropna(axis=1)
+X_returns_candidates = prices_to_returns(X_prices_all)
 
-scores = df.set_index("TICKER")["VALUE INVESTING SCORE"].reindex(X_returns.columns)
+all_tickers = X_returns_candidates.columns.tolist()
+print(f"Initial candidates: {len(all_tickers)} stocks")
+
+# Use sklearn Pipeline
+pre_selection = Pipeline([
+    ("drop_zero_var", DropZeroVariance()),
+    ("drop_corr", DropCorrelated(threshold=0.95, absolute=True)),
+    ("select_k", SelectKExtremes(k=N_STOCKS, measure=PerfMeasure.MEAN, highest=True)),
+])
+
+pre_selection.fit(X_returns_candidates)
+
+steps = list(pre_selection.named_steps.values())
+selected_tickers = all_tickers
+for step in steps:
+    selected_tickers = [t for t, m in zip(selected_tickers, step.get_support()) if m]
+
+X_returns_selected = X_returns_candidates[selected_tickers]
+
+scores = df.set_index("TICKER")["VALUE INVESTING SCORE"].reindex(selected_tickers)
 w_base = scores.values / scores.sum()
 
 model = MeanRisk(
-    objective_function=ObjectiveFunction.MAXIMIZE_UTILITY,
+    objective_function=ObjectiveFunction.MAXIMIZE_RETURN,
     prior_estimator=EmpiricalPrior(
         covariance_estimator=LedoitWolf()
     ),
     risk_aversion=0.35,
     l2_coef=0.01,
     target_weights=w_base,
-    min_weights=0.02,
-    max_weights=0.06,
+    max_weights=0.08,
+    min_weights=0.033,
 )
-model.fit(X_returns)
+model.fit(X_returns_selected)
 weights = model.weights_
 
 results = pd.DataFrame({
-    "TICKER": X_returns.columns,
+    "TICKER": X_returns_selected.columns,
     "WEIGHT": (weights / weights.sum() * 1000).astype(int)
-}).sort_values("WEIGHT", ascending=False).head(N_STOCKS)
+}).sort_values("WEIGHT", ascending=False)
 
 results["ALLOCATION (%)"] = (results["WEIGHT"] / results["WEIGHT"].sum() * 100).round(4)
 print(results[["TICKER", "WEIGHT", "ALLOCATION (%)"]])
 
-selected_tickers = results["TICKER"].tolist()
-weights_series = pd.Series(weights, index=X_returns.columns)
+weights_series = pd.Series(weights, index=X_returns_selected.columns)
 selected_weights = weights_series[selected_tickers].values
 
-X_returns_selected = X_returns[selected_tickers]
+X_returns_selected = X_returns_selected[selected_tickers]
 
 generate_graphs = True
 if generate_graphs:
@@ -118,3 +136,5 @@ if generate_graphs:
 
     print(f"return: {opt_return * 12 * 100:.2f}%")
     print(f"volatility: {opt_vol * np.sqrt(12) * 100:.2f}%")
+
+    # ma'at 1
