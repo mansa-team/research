@@ -10,11 +10,11 @@ start_time = time.time()
 semaphore = asyncio.Semaphore(10)
 
 tickers = [
-    "WEGE3", "RADL3", "EGIE3", "ITUB4", "ITUB3", "LREN3", "BBAS3", "VALE3",
+    "WEGE3", "RADL3", "EGIE3", "ITUB3", "LREN3", "BBAS3", "VALE3",
     "EQTL3", "RENT3", "FLRY3", "LEVE3", "B3SA3", "PSSA3", "TOTS3",
     "BBSE3", "TAEE11", "FRAS3", "SAPR11", "BRAP4", "CPFE3", "CSUD3",
     "SLCE3", "ODPV3", "PNVL3",
-    "CMIG4", "MDIA3", "CXSE3", "GRND3", "PRIO3", "SMTO3", "UGPA3",
+    "CMIG3", "MDIA3", "CXSE3", "GRND3", "PRIO3", "SMTO3", "UGPA3",
     "SBSP3", "ABCB4", "TIMS3", "VIVT3", "SANB11", "CSMG3", "YDUQ3",
     "VBBR3", "HYPE3", "VIVA3", "GOAU4", "RANI3", "SUZB3", "BRFS3", "INTB3",
     "TUPY3", "EMBR3", "ALUP11", "MGLU3", "AURE3", "KEPL3", "CSAN3",
@@ -98,6 +98,13 @@ for idx, ticker in enumerate(tickers):
     df = pd.merge(df_hist, df_fund, on="TICKER")
 
     score = 0
+    n_years = 0
+    growth_score = 0
+    consistency_score = 0
+    m_vol = 1.0
+    m_dd = 1.0
+    m_liq = 1.0
+    m_class = 1.0
     
     row = df.iloc[0]
     profit_cols = [col for col in row.keys() if str(col).startswith("LUCRO LIQUIDO") and str(col)[-1].isdigit()]
@@ -113,7 +120,8 @@ for idx, ticker in enumerate(tickers):
             continue
     
     profit_df = pd.DataFrame(profit_data).sort_values("YEAR").reset_index(drop=True)
-    profit10y_df = profit_df[profit_df['YEAR'].isin(years)].copy().reset_index(drop=True)
+    profit10y_df = profit_df[profit_df['YEAR'].isin(years)].dropna().copy().reset_index(drop=True)
+    n_years = len(profit10y_df)
     
     if len(profit10y_df) >= 10:
         profits = profit10y_df["LUCRO LIQUIDO"].astype(float).values
@@ -122,7 +130,6 @@ for idx, ticker in enumerate(tickers):
         mean_profit = np.mean(profits)
         
         if mean_profit > 0:
-            # Linear regression
             model = LinearRegression().fit(X, profits)
             slope = model.coef_[0]
             
@@ -133,17 +140,14 @@ for idx, ticker in enumerate(tickers):
             residuals = profits - preds
             cv_rmse = np.sqrt(np.mean(residuals**2)) / mean_profit
             
-            # Volatility penalty
             volatility_penalty = max(0, cv_rmse - 0.15) * 2.0
-            volatility_multiplier = max(0.3, 1.0 - volatility_penalty)
+            m_vol = max(0.3, 1.0 - volatility_penalty)
             
-            # Yearly growth
             yearly_growth = pd.Series(profits).pct_change().dropna()
             positive_years_ratio = (yearly_growth > 0).sum() / len(yearly_growth) if len(yearly_growth) > 0 else 0
             profitable_years_ratio = (profits > 0).sum() / len(profits)
             consistency_score = (profitable_years_ratio * 60) + (positive_years_ratio * 40)
             
-            # Drawdowns
             running_max = np.maximum.accumulate(profits)
             safe_running_max = np.where(running_max <= 0, 1e-9, running_max)
             drawdowns = (profits - safe_running_max) / safe_running_max
@@ -156,28 +160,39 @@ for idx, ticker in enumerate(tickers):
             else:
                 effective_dd = max_dd
             
-            dd_multiplier = max(0.4, 1.0 - effective_dd)
+            m_dd = max(0.4, 1.0 - effective_dd)
             
-            # Base score
             base_score = (growth_score * 0.45) + (consistency_score * 0.55)
-            score = base_score * volatility_multiplier * dd_multiplier
+            score = base_score * m_vol * m_dd
             
-            # Liquidity multiplier
             target_liquidity = 10_000_000
             if total_liq < target_liquidity:
                 ratio = total_liq / target_liquidity
-                liquidity_multiplier = max(0.5, np.sqrt(min(1.0, ratio)))
-                score *= liquidity_multiplier
+                m_liq = max(0.5, np.sqrt(min(1.0, ratio)))
+                score *= m_liq
             
-            # Ticker suffix penalty
             if not ticker.endswith("3"):
+                m_class = 0.75
                 score *= 0.75
     
     score = min(max(score, 0), 100)
-    results.append({"TICKER": ticker, "SCORE": score})
+    results.append({
+        "TICKER": ticker,
+        "SCORE": score,
+        "GROWTH_SCORE": growth_score,
+        "CONSISTENCY_SCORE": consistency_score,
+        "M_VOL": m_vol,
+        "M_DD": m_dd,
+        "M_LIQ": m_liq,
+        "M_CLASS": m_class,
+        "N_YEARS": n_years
+    })
 
 results.sort(key=lambda x: x["SCORE"], reverse=True)
-for r in results:
-    print(f"{r['TICKER']}: {r['SCORE']:.2f}")
+
+results_df = pd.DataFrame(results)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+print(results_df.to_string(index=False))
 
 print(f"\nelapsed: {time.time() - start_time:.2f}s")
