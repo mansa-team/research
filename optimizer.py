@@ -19,11 +19,10 @@ start_time = time.time()
 
 np.random.seed(42)
 
-# selic = pd.DataFrame(requests.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados?formato=json").json())
+selic = pd.DataFrame(requests.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados?formato=json").json())
 
 N_STOCKS = 18
-RISK_FREE_RATE = 0.14
-# RISK_FREE_RATE = float(selic['valor'].iloc[-1]) / 100
+RISK_FREE_RATE = float(selic['valor'].iloc[-1]) / 100
 
 param_grid = {
     'risk_aversion': np.linspace(0.20, 0.60, 3),

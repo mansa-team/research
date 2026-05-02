@@ -1,8 +1,6 @@
 import pandas as pd
 import numpy as np
-import math
 from datetime import datetime
-from sklearn.preprocessing import MinMaxScaler
 from sklearn.linear_model import LinearRegression
 import requests
 
@@ -29,32 +27,47 @@ def calculate_score(df, ticker, total_liq):
     profit10y_df = profit_df[profit_df['YEAR'].isin(years)].copy().reset_index(drop=True)
 
     if len(profit10y_df) >= 10:
-        X = profit10y_df[["YEAR"]]
-        y = profit10y_df[["LUCRO LIQUIDO"]]
+        profits = profit10y_df["LUCRO LIQUIDO"].astype(float).values
+        X = np.arange(len(profits)).reshape(-1, 1)
 
-        scaler_x = MinMaxScaler()
-        X_scaled = scaler_x.fit_transform(X)
-        scaler_y = MinMaxScaler(feature_range=(0, 10))
-        y_scaled = scaler_y.fit_transform(y)
-        model = LinearRegression().fit(X_scaled, y_scaled)
+        mean_profit = np.mean(profits)
+        if mean_profit <= 0:
+            return 0
 
-        opposing_cathet = max(0, model.coef_[0][0])
-        angle_deg = math.degrees(math.atan(opposing_cathet))
-        r2 = max(0, model.score(X_scaled, y_scaled))
-        profits_numeric = profit10y_df["LUCRO LIQUIDO"].astype(float)
-        yearly_growth = profits_numeric.pct_change().dropna()
+        model = LinearRegression().fit(X, profits)
+        slope = model.coef_[0]
+
+        relative_growth = slope / mean_profit
+        growth_score = min(100, max(0, (relative_growth / 0.07) * 100))
+
+        preds = model.predict(X)
+        residuals = profits - preds
+        cv_rmse = np.sqrt(np.mean(residuals**2)) / mean_profit
+
+        volatility_penalty = max(0, cv_rmse - 0.15) * 2.0
+        volatility_multiplier = max(0.3, 1.0 - volatility_penalty)
+
+        yearly_growth = pd.Series(profits).pct_change().dropna()
         positive_years_ratio = (yearly_growth > 0).sum() / len(yearly_growth) if len(yearly_growth) > 0 else 0
+        profitable_years_ratio = (profits > 0).sum() / len(profits)
+        consistency_score = (profitable_years_ratio * 60) + (positive_years_ratio * 40)
 
-        angle_score = (angle_deg / 90) * 100
-        raw_consist = (r2 + positive_years_ratio) / 2
-        penalty_sensitivity = max(0.1, 1 - (angle_deg / 110))
-        score = angle_score * (raw_consist**penalty_sensitivity)
+        running_max = np.maximum.accumulate(profits)
+        safe_running_max = np.where(running_max <= 0, 1e-9, running_max)
+        drawdowns = (profits - safe_running_max) / safe_running_max
+        max_dd = abs(np.min(drawdowns))
+        current_profit = profits[-1]
+        max_profit = np.max(profits)
 
-        if r2 > 0.9 and positive_years_ratio >= 0.9:
-            score = min(100, score + 5)
+        if max_profit > 0 and (current_profit / max_profit) >= 0.90:
+            effective_dd = max_dd * 0.25
+        else:
+            effective_dd = max_dd
 
-        if (profit_df["LUCRO LIQUIDO"] < 0).any():
-            score *= 0.5
+        dd_multiplier = max(0.4, 1.0 - effective_dd)
+
+        base_score = (growth_score * 0.45) + (consistency_score * 0.55)
+        score = base_score * volatility_multiplier * dd_multiplier
 
         target_liquidity = 10_000_000
         if total_liq < target_liquidity:
@@ -91,7 +104,7 @@ def eval(TICKER):
 
 if __name__ == "__main__":
     tickers = [
-        "WEGE3", "RADL3", "EGIE3", "ITUB4", "LREN3", "BBAS3", "VALE3", 
+        "WEGE3", "RADL3", "EGIE3", "ITUB4", "ITUB3", "LREN3", "BBAS3", "VALE3", 
         "EQTL3", "RENT3", "FLRY3", "LEVE3", "B3SA3", "PSSA3", "TOTS3",
 
         "BBSE3", "TAEE11", "FRAS3", "SAPR11", "BRAP4", "CPFE3", "CSUD3", 
