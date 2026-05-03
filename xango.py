@@ -1,11 +1,7 @@
 import pandas as pd
 import numpy as np
 import requests
-import asyncio
-import time
 from datetime import datetime
-
-start_time = time.time()
 
 TICKERS = [
     "WEGE3", "RADL3", "EGIE3", "ITUB3", "LREN3", "BBAS3", "VALE3", "EQTL3", "RENT3",
@@ -19,127 +15,80 @@ TICKERS = [
     "TASA4", "PETZ3", "CASH3", "RAIZ4", "LIGT3", "GOLL4", "AZUL4", "USIM5",
     "JALL3", "NGRD3", "AERI3", "BHIA3", "HBSA3"
 ]
+TICKERS_SEARCH = [t[:4] for t in TICKERS]
+TICKERS_SEARCH = ", ".join(TICKERS_SEARCH)
 
-cache = {}
+fund = pd.DataFrame(requests.get(f"http://localhost:3200/stocks/fundamental?search={TICKERS_SEARCH}&fields=LIQUIDEZ MEDIA DIARIA&dates=2026-04-16").json()["data"])
+hist = pd.DataFrame(requests.get(f"http://localhost:3200/stocks/historical?search={TICKERS_SEARCH}&fields=LUCRO LIQUIDO").json()["data"])
+df = pd.merge(fund, hist).drop(columns={"LUCRO LIQUIDO 999"})
 
-def fetch(url):
-    if url in cache:
-        return cache.setdefault(url, requests.get(url).json())
-    return requests.get(url).json()
+total_liq = df.groupby("NOME")["LIQUIDEZ MEDIA DIARIA"].sum()
 
-def get_data(tickers):
-    prefixes = list({t[:4] for t in tickers})
+years = range(datetime.now().year - 10, datetime.now().year)
 
-    hist = [fetch(f"http://localhost:3200/stocks/historical?search={t}&fields=LUCRO LIQUIDO") for t in tickers]
-    fund = [fetch(f"http://localhost:3200/stocks/fundamental?search={p}&fields=LIQUIDEZ MEDIA DIARIA&dates=2026-04-16") for p in prefixes]
-    
-    return hist, {p: f for p, f in zip(prefixes, fund)}
+results = []
+for idx, row in df[df["TICKER"].isin(TICKERS)].iterrows():
+    profits = row[row.index.str.startswith("LUCRO LIQUIDO")].dropna()
+    profits = profits.to_frame("value").rename_axis("year").reset_index()
+    profits = profits.assign(year=lambda x: x["year"].str.extract(r"(\d+)")[0].astype(int))
 
-def calc_score(profits: np.ndarray) -> dict:
-    n = len(profits)
-    if n < 10:
-        return {"score": 0, "n_years": n, "growth": 0, "consistency": 0, "m_vol": 1, "m_dd": 1}
-    
-    x = np.arange(n)
-    mean = np.mean(profits)
-    
-    # Linear + Log-linear growth
-    slope = np.polyfit(x, profits, 1)[0]
-    log_slope = np.polyfit(x, np.log(profits + 1), 1)[0]
-    growth = min(100, max(0, max(slope / mean, np.exp(log_slope) - 1) / 0.07 * 100))
-    
-    # Volatility (CV-RMSE)
-    pred = np.polyval(np.polyfit(x, profits, 1), x)
-    cv_rmse = np.sqrt(np.mean((profits - pred) ** 2)) / mean
-    m_vol = max(0.3, 1 - 2 * max(0, cv_rmse - 0.15))
-    
-    # Consistency
-    yoy = np.diff(profits) / profits[:-1]
-    pos_ratio = np.mean(yoy > 0)
-    prof_ratio = np.mean(profits > 0)
-    consistency = prof_ratio * 60 + pos_ratio * 40
-    
-    # Drawdown with continuous forgiveness
-    running_max = np.maximum.accumulate(profits)
-    max_dd = 1 - np.min(profits / np.maximum(running_max, 1))
-    recovery = profits[-1] / np.max(profits)
-    
-    if recovery >= 0.90:
-        m_dd = max(0.4, 1 - max_dd * 0.25)
-    elif recovery >= 0.50:
-        forgiveness = 0.6 * (recovery - 0.50) / 0.40
-        m_dd = max(0.4, 1 - max_dd * (1 - forgiveness))
-    else:
-        m_dd = max(0.4, 1 - max_dd * recovery / 0.50)
-    
-    # Final score
-    base = growth * 0.45 + consistency * 0.55
-    return {
-        "score": min(100, max(0, base * m_vol * m_dd)),
-        "n_years": n, "growth": growth, "consistency": consistency,
-        "m_vol": m_vol, "m_dd": m_dd
-    }
+    print(profits)
 
-if __name__ == "__main__":
-    years = range(datetime.now().year - 10, datetime.now().year)
-    hist_data, fund_data = get_data(TICKERS)
-    
-    # Process each ticker
-    results = []
-    for i, ticker in enumerate(TICKERS):
-        hist = hist_data[i].get("data", [])
-        if not hist:
-            continue
-        
-        fund = fund_data.get(ticker[:4], {}).get("data", [])
-        if not fund:
-            continue
-        
-        # Extract profits (pandas vectorized)
-        row = pd.Series(hist[0])
-        profit_cols = row.index[row.index.str.contains("LUCRO LIQUIDO")]
-        
-        # Build year -> profit mapping
-        profits_dict = {}
-        for col in profit_cols:
-            try:
-                year = int(col.split()[-1])
-                if year in years:
-                    profits_dict[year] = row[col]
-            except:
-                continue
-        
-        if len(profits_dict) < 10:
-            continue
-        
-        # Sort by year and get values (as float)
-        profits = np.array([profits_dict[y] for y in sorted(profits_dict.keys())], dtype=float)
-        
-        # Handle NaN/zero
-        profits = profits[~np.isnan(profits) & (profits > 0)]
-        
-        if len(profits) < 10:
-            continue
-        
-        # Calculate score
-        result = calc_score(profits)
-        result["ticker"] = ticker
-        
-        # Liquidity & class multipliers
-        liq = sum(f.get("LIQUIDEZ MEDIA DIARIA", 0) or 0 for f in fund)
-        m_liq = max(0.5, np.sqrt(min(1, liq / 10_000_000))) if liq < 10_000_000 else 1
-        m_class = 0.75 if not ticker.endswith("3") else 1
-        
-        result["score"] = min(100, result["score"] * m_liq * m_class)
-        result["m_liq"] = m_liq
-        result["m_class"] = m_class
-        results.append(result)
+    profits_10y = profits[profits["year"].isin(years)].sort_values("year", ascending=True)
 
-    if results:
-        df = pd.DataFrame(results)
-        cols = ["ticker", "score", "growth", "consistency", "m_vol", "m_dd", "m_liq", "m_class", "n_years"]
-        print(df[cols].sort_values("score", ascending=False).to_string(index=False))
-    else:
-        print("No results - check API status")
-    
-    print(f"\nElapsed: {time.time() - start_time:.2f}s")
+    if len(profits) >= 10:
+        n = len(profits_10y)
+        x = np.arange(n).astype(float)
+        profits_10y = profits_10y["value"].astype(float).values.flatten()
+        
+        mean = np.mean(profits_10y)
+        slope = np.polyfit(x, profits_10y, 1)[0]
+        log_slope = np.polyfit(x, np.log(np.maximum(profits_10y, 0) + 1), 1)[0]
+        growth = min(100, max(0, max(slope / mean, np.exp(log_slope) - 1) / 0.07 * 100))
+
+        pred = np.polyval(np.polyfit(x, profits_10y, 1), x)
+        cv_rmse = np.sqrt(np.mean((profits_10y - pred) ** 2)) / mean
+        m_vol = max(0.3, 1 - 2 * max(0, cv_rmse - 0.15))
+        
+        yoy = np.diff(profits_10y) / profits_10y[:-1]
+        pos_ratio = np.mean(yoy > 0)
+        prof_ratio = np.mean(profits_10y > 0)
+        consistency = prof_ratio * 60 + pos_ratio * 40
+
+        running_max = np.maximum.accumulate(np.maximum(profits_10y, 0))
+        max_dd = min(1, 1 - np.min(profits_10y / np.maximum(running_max, 1)))
+        recovery = profits_10y[-1] / np.max(profits_10y)
+
+        if recovery >= 0.90:
+            m_dd = max(0.4, 1 - max_dd * 0.25)
+        elif recovery >= 0.50:
+            forgiveness = 0.6 * (recovery - 0.50) / 0.40
+            m_dd = max(0.4, 1 - max_dd * (1 - forgiveness))
+        else:
+            m_dd = max(0.4, 1 - max_dd * recovery / 0.50)
+        
+        base = growth * 0.45 + consistency * 0.55
+        score = min(100, max(0, base * m_vol * m_dd))
+        
+        target_liq = 10_000_000
+        m_liq = max(0.5, np.sqrt(min(1, total_liq.loc[row["NOME"]] / target_liq))) if total_liq.loc[row["NOME"]] < target_liq else 1
+
+        m_class = 0.75 if not row["TICKER"].endswith("3") else 1
+
+        m_profits = 0.5 if (profits["value"] <= 0).any() else 1
+
+        score = min(100, score * m_liq * m_class * m_profits)
+
+        results.append({
+            "ticker": row["TICKER"],
+            "score": score,
+            "growth": growth,
+            "consistency": consistency,
+            "m_vol": m_vol,
+            "m_dd": m_dd,
+            "m_liq": m_liq,
+            "m_class": m_class,
+            "n_years": n
+        })
+
+print(pd.DataFrame(results).sort_values('score', ascending=False).to_string())

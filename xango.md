@@ -11,17 +11,30 @@ The Xangô Algorithm solves this by utilizing a modular, non-compensatory engine
 
 ### The Global Score Function
 
-The final score is a bounded product of three distinct engines. This multiplicative structure acts as a logical gate; if any engine returns a near-zero value, the asset is mathematically disqualified from the MUSA ecosystem.
+The final score is a bounded product of four distinct engines. This multiplicative structure acts as a logical gate; if any engine returns a near-zero value, the asset is mathematically disqualified from the MUSA ecosystem.
 
 $$
-f(P, L, c) = \min(100, \max(0, \Phi(P) \cdot \Omega(P) \cdot \Lambda(L, c)))
+f(P, L, c) = \min(100, \max(0, \Phi(P) \cdot \Omega(P) \cdot \Lambda(L, c) \cdot M_{profit}(P)))
 $$
 
 Where:
 
-- $P$: 10-year profit vector $\{p_1, p_2, \dots, p_{10}\}$
+- $P$: 10-year profit vector $\{p_1, p_2, \dots, p_{10}\}$ (ordered from oldest to newest: $p_1 = 2016$, $p_{10} = 2025$)
 - $L$: Average daily liquidity
 - $c$: Ticker class identifier (Suffix)
+
+### Profit Quality Gate: $M_{profit}(P)$
+
+Before any calculation, the algorithm applies a penalty to stocks with any negative annual profit:
+
+$$
+M_{profit}(P) = \begin{cases}
+0.5 & \text{if } \exists \; p_t < 0 \\
+1.0 & \text{otherwise}
+\end{cases}
+$$
+
+This ensures that companies with any annual loss are mathematically penalized, as erratic or negative earnings indicate structural weakness regardless of other metrics.
 
 ### Fundamental Engine: $\Phi(P)$
 
@@ -72,13 +85,13 @@ Where $RMSE = \sqrt{\frac{1}{n} \sum (p_t - \hat{p}_t)^2}$ is the root mean squa
 This factor rewards "Anti-fragility." It uses continuous interpolation instead of a binary threshold to handle mature companies that stabilize below their all-time peak:
 
 $$
-M_{DD}(P) = \max\left(0.4, \;\; 1 - \hat{DD}_effective\right)
+M_{DD}(P) = \max\left(0.4, \;\; 1 - \hat{DD}_{effective}\right)
 $$
 
-Where the effective drawdown $\hat{DD}_effective$ is computed using continuous recovery forgiveness:
+Where the effective drawdown $\hat{DD}_{effective}$ is computed using continuous recovery forgiveness:
 
 $$
-\hat{DD}_effective} = \begin{cases}
+\hat{DD}_{effective} = \begin{cases}
 0.25 \cdot DD_{max} & \text{if } \rho \ge 0.90 \\
 (1 - 0.6 \frac{\rho - 0.50}{0.40}) \cdot DD_{max} & \text{if } 0.50 \le \rho < 0.90 \\
 \frac{\rho}{0.50} \cdot DD_{max} & \text{if } \rho < 0.50
