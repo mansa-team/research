@@ -5,8 +5,9 @@ from datetime import datetime
 
 MIN_YEARS = 10
 
+CONSISTENCY_WEIGHT = 0.55 #consistency_w + growth_w > 1 but ok, used just for normalization
 GROWTH_WEIGHT = 0.75
-GROWTH_THRESHOLD = 0.07
+GROWTH_THRESHOLD = 0.10
 
 VOLATILITY_THRESHOLD = 0.16
 VOLATILITY_FLOOR = 0.40
@@ -45,7 +46,8 @@ for idx, row in df[df["TICKER"].isin(TICKERS)].iterrows():
 
     profits_10y = profits[profits["year"].isin(years)].sort_values("year", ascending=True)
 
-    if len(profits) >= MIN_YEARS:
+    score = growth = consistency = m_vol = m_dd = m_liq = m_class = n = np.nan
+    if len(profits_10y) >= MIN_YEARS:
         n = len(profits_10y)
         x = np.arange(n).astype(float)
         profits_10y = profits_10y["value"].astype(float).values.flatten()
@@ -78,7 +80,7 @@ for idx, row in df[df["TICKER"].isin(TICKERS)].iterrows():
             m_dd = max(DRAWDOWN_FLOOR, 1 - max_dd * recovery / recovery_low)
         m_dd = min(1, m_dd)
 
-        base = growth * GROWTH_WEIGHT + consistency * (1 - GROWTH_WEIGHT)
+        base = growth * GROWTH_WEIGHT + consistency * CONSISTENCY_WEIGHT
         score = min(100, max(0, base * m_vol * m_dd))
         
         m_liq = max(0.5, np.sqrt(min(1, total_liq.loc[row["NOME"]] / 10_000_000))) if total_liq.loc[row["NOME"]] < 10_000_000 else 1
@@ -89,6 +91,7 @@ for idx, row in df[df["TICKER"].isin(TICKERS)].iterrows():
 
         score = min(100, score * m_liq * m_class * m_profits)
 
+    try:
         results.append({
             "ticker": row["TICKER"],
             "score": score,
@@ -100,5 +103,7 @@ for idx, row in df[df["TICKER"].isin(TICKERS)].iterrows():
             "m_class": m_class,
             "n_years": n
         })
+    except:
+        print(f"{row["TICKER"]}: failed")
 
 print(pd.DataFrame(results).sort_values('score', ascending=False).to_string())

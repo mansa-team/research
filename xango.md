@@ -168,7 +168,8 @@ The algorithm uses a reduced parameter set of **11 configurable parameters**:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `GROWTH_WEIGHT` | 0.75 | Weight for growth (consistency = 1 - growth) |
+| `CONSISTENCY_WEIGHT` | 0.55 | Weight for consistency |
+| `GROWTH_WEIGHT` | 0.75 | Weight for growth |
 | `GROWTH_THRESHOLD` | 0.07 | Growth threshold (7%) |
 
 ### 7.3 Volatility
