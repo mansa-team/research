@@ -8,25 +8,11 @@ MIN_YEARS = 10
 GROWTH_WEIGHT = 0.75
 GROWTH_THRESHOLD = 0.07
 
-CONSISTENCY_WEIGHT = 0.55
-PROFIT_RATIO_WEIGHT = 60
-POS_YOY_WEIGHT = 40
-
-CV_RMSE_THRESHOLD = 0.16
+VOLATILITY_THRESHOLD = 0.16
 VOLATILITY_FLOOR = 0.40
-VOLATILITY_PENALTY = 2.5
 
-RECOVERY_THRESHOLD_HIGH = 0.45
-RECOVERY_THRESHOLD_LOW = 0.25
+RECOVERY_THRESHOLD = 0.45
 DRAWDOWN_FLOOR = 0.60
-DRAWDOWN_PENALTY_HIGH = 0.25
-DRAWDOWN_PENALTY_LOW = 0.40
-
-LIQUIDITY_THRESHOLD = 10_000_000
-LIQUIDITY_PENALTY = 0.5
-
-CLASS_PENALTY = 0.75
-PROFIT_PENALTY = 0.5
 
 TICKERS = [
     "WEGE3", "RADL3", "EGIE3", "ITUB3", "LREN3", "BBAS3", "VALE3", "EQTL3", "RENT3",
@@ -71,34 +57,35 @@ for idx, row in df[df["TICKER"].isin(TICKERS)].iterrows():
 
         pred = np.polyval(np.polyfit(x, profits_10y, 1), x)
         cv_rmse = np.sqrt(np.mean((profits_10y - pred) ** 2)) / mean
-        m_vol = max(VOLATILITY_FLOOR, 1 - VOLATILITY_PENALTY * max(0, cv_rmse - CV_RMSE_THRESHOLD))
+        m_vol = max(VOLATILITY_FLOOR, 1 - 2 * max(0, cv_rmse - VOLATILITY_THRESHOLD))
         
         yoy = np.diff(profits_10y) / profits_10y[:-1]
         pos_ratio = np.mean(yoy > 0)
         prof_ratio = np.mean(profits_10y > 0)
-        consistency = prof_ratio * PROFIT_RATIO_WEIGHT + pos_ratio * POS_YOY_WEIGHT
+        consistency = prof_ratio * 60 + pos_ratio * 40
 
         running_max = np.maximum.accumulate(profits_10y)
         max_dd = min(1, 1 - np.min(profits_10y / np.maximum(running_max, 1)))
         recovery = profits_10y[-1] / np.max(profits_10y)
 
-        if recovery >= RECOVERY_THRESHOLD_HIGH:
-            m_dd = max(DRAWDOWN_FLOOR, 1 - max_dd * DRAWDOWN_PENALTY_HIGH)
-        elif recovery >= RECOVERY_THRESHOLD_LOW:
-            forgiveness = (1 - DRAWDOWN_PENALTY_LOW) * (recovery - RECOVERY_THRESHOLD_LOW) / (RECOVERY_THRESHOLD_HIGH - RECOVERY_THRESHOLD_LOW)
+        recovery_low = RECOVERY_THRESHOLD * 0.55
+        if recovery >= RECOVERY_THRESHOLD:
+            m_dd = max(DRAWDOWN_FLOOR, 1 - max_dd * 0.25)
+        elif recovery >= recovery_low:
+            forgiveness = 0.6 * (recovery - recovery_low) / (RECOVERY_THRESHOLD - recovery_low)
             m_dd = max(DRAWDOWN_FLOOR, 1 - max_dd * (1 - forgiveness))
         else:
-            m_dd = max(DRAWDOWN_FLOOR, 1 - max_dd * recovery / RECOVERY_THRESHOLD_LOW)
+            m_dd = max(DRAWDOWN_FLOOR, 1 - max_dd * recovery / recovery_low)
         m_dd = min(1, m_dd)
 
-        base = growth * GROWTH_WEIGHT + consistency * CONSISTENCY_WEIGHT
+        base = growth * GROWTH_WEIGHT + consistency * (1 - GROWTH_WEIGHT)
         score = min(100, max(0, base * m_vol * m_dd))
         
-        m_liq = max(LIQUIDITY_PENALTY, np.sqrt(min(1, total_liq.loc[row["NOME"]] / LIQUIDITY_THRESHOLD))) if total_liq.loc[row["NOME"]] < LIQUIDITY_THRESHOLD else 1
+        m_liq = max(0.5, np.sqrt(min(1, total_liq.loc[row["NOME"]] / 10_000_000))) if total_liq.loc[row["NOME"]] < 10_000_000 else 1
 
-        m_class = CLASS_PENALTY if not row["TICKER"].endswith("3") else 1
+        m_class = 0.75 if not row["TICKER"].endswith("3") else 1
 
-        m_profits = PROFIT_PENALTY if (profits_10y <= 0).any() else 1
+        m_profits = 0.5 if (profits_10y <= 0).any() else 1
 
         score = min(100, score * m_liq * m_class * m_profits)
 

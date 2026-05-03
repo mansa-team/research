@@ -1,6 +1,5 @@
 # Xangô: Mansa's Alpha Scoring Algorithm
 
-
 In classical quantitative finance, the search for "Alpha" (excess return) is often hindered by the Growth-Volatility Paradox. Conventional screening methods, such as CAGR (Compound Annual Growth Rate) or simple average ROIC, are "point-to-point" measurements. They measure the destination but ignore the journey. This lack of granularity often leads to the inclusion of "Wobbly Growth" stocks: companies that show high returns over a decade but achieve them through erratic, boom-and-bust cycles that indicate high structural risk.
 
 The Xangô Algorithm solves this by utilizing a modular, non-compensatory engine architecture. By treating Growth, Risk, and Market Constraints as independent stochastic kernels linked by multiplication rather than addition, Xangô ensures that a failure in structural quality cannot be "averaged out" by high historical returns.
@@ -19,7 +18,7 @@ This paper presents Xangô, a modular scoring system designed specifically for t
 1. Scale-invariant metrics using normalized residuals
 2. Recovery-aware drawdown forgiveness
 3. Non-compensatory multiplicative scoring
-4. Configurable parameterization for adaptive tuning
+4. Simplified parameterization (11 configurable parameters)
 
 ---
 
@@ -56,31 +55,30 @@ Where $\alpha_{profit}$ is the profit penalty multiplier (default: 0.5).
 
 The Fundamental Engine evaluates the "Intrinsic Velocity" of the business. It eliminates size-bias by normalizing the regression slope against the company's mean earnings.
 
-$$\Phi(P) = \omega_{growth} \cdot S_{growth}(P) + \omega_{cons} \cdot S_{cons}(P)$$
+$$\Phi(P) = \omega_{growth} \cdot S_{growth}(P) + (1 - \omega_{growth}) \cdot S_{cons}(P)$$
 
-Default weights: $\omega_{growth} = 0.75$, $\omega_{cons} = 0.55$
+Where $\omega_{growth}$ is the growth weight (consistency weight is derived as $1 - \omega_{growth}$).
+
+**Default:** $\omega_{growth} = 0.75$ (consistency weight = 0.25)
 
 ### 4.1 Relative Growth ($S_{growth}$)
 
 Measures the OLS (Ordinary Least Squares) regression slope ($\beta$) normalized by mean profit ($\mu_p$), capped at a configurable relative growth threshold ($T_{growth}$). Uses the maximum of both linear and log-linear (CAGR) approaches to capture both absolute growth and compound velocity:
 
-$$S_{growth}(P) = \min\left(C_{growth}, \max\left(0, \frac{\max(\beta / \mu_p, \; e^{\hat{\beta}} - 1)}{T_{growth}} \cdot 100\right)\right)$$
+$$S_{growth}(P) = \min\left(100, \max\left(0, \frac{\max(\beta / \mu_p, \; e^{\hat{\beta}} - 1)}{T_{growth}} \cdot 100\right)\right)$$
 
-**Default parameters:**
+**Default parameter:**
 - $T_{growth} = 0.07$ (7% threshold)
-- $C_{growth} = 100$ (maximum cap)
 
 Where $\hat{\beta}$ is the slope from regressing $\ln(P)$ on time.
 
 ### 4.2 Consistency ($S_{cons}$)
 
-A weighted metric assessing the reliability of capital generation:
+A weighted metric assessing the reliability of capital generation with fixed internal weights:
 
-$$S_{cons}(P) = \omega_{profit} \cdot \left(\frac{1}{n} \sum \mathbf{1}_{\{p_t > 0\}}\right) + \omega_{yoy} \cdot \left(\frac{1}{n-1} \sum \mathbf{1}_{\{p_t > p_{t-1}\}}\right)$$
+$$S_{cons}(P) = 60 \cdot \left(\frac{1}{n} \sum \mathbf{1}_{\{p_t > 0\}}\right) + 40 \cdot \left(\frac{1}{n-1} \sum \mathbf{1}_{\{p_t > p_{t-1}\}}\right)$$
 
-**Default weights:**
-- $\omega_{profit} = 60$ (profit positivity weight)
-- $\omega_{yoy} = 40$ (year-over-year growth weight)
+The 60/40 ratio represents the relative importance of profit positivity vs. year-over-year growth consistency.
 
 ---
 
@@ -94,33 +92,29 @@ $$\Omega(P) = M_{vol}(P) \cdot M_{DD}(P)$$
 
 Unlike standard deviation, $M_{vol}$ only penalizes the residuals from the linear trend. If a stock grows perfectly linearly, it receives no penalty, regardless of how "fast" it moves. The CV-RMSE is calculated using raw residuals normalized by mean profit for scale-invariance while capturing all oscillation:
 
-$$M_{vol}(P) = \max\left(F_{vol}, \;\; 1 - \gamma_{vol} \cdot \max\left(0, \frac{RMSE}{\mu_p} - T_{cv}\right)\right)$$
+$$M_{vol}(P) = \max\left(F_{vol}, \;\; 1 - 2 \cdot \max\left(0, \frac{RMSE}{\mu_p} - T_{cv}\right)\right)$$
 
 **Default parameters:**
 - $T_{cv} = 0.16$ (CV-RMSE threshold)
 - $F_{vol} = 0.40$ (volatility floor)
-- $\gamma_{vol} = 2.5$ (volatility penalty multiplier)
 
 Where $RMSE = \sqrt{\frac{1}{n} \sum (p_t - \hat{p}_t)^2}$ is the root mean square error from the linear trend.
 
 ### 5.2 Recovery-Aware Drawdown ($M_{DD}$)
 
-This factor rewards "Anti-fragility." It uses continuous interpolation instead of a binary threshold to handle mature companies that stabilize below their all-time peak:
+This factor rewards "Anti-fragility." It uses continuous interpolation with a single threshold to handle mature companies that stabilize below their all-time peak:
 
 $$M_{DD}(P) = \max\left(F_{dd}, \;\; 1 - \hat{DD}_{effective}\right)$$
 
 **Default parameters:**
 - $F_{dd} = 0.60$ (drawdown floor)
-- $T_{high} = 0.45$ (high recovery threshold)
-- $T_{low} = 0.25$ (low recovery threshold)
-- $\gamma_{high} = 0.25$ (penalty at high recovery)
-- $\gamma_{low} = 0.40$ (forgiveness factor at low recovery)
+- $T_{recovery} = 0.45$ (recovery threshold for full forgiveness)
 
-The effective drawdown $\hat{DD}_{effective}$ is computed using continuous recovery forgiveness:
+The effective drawdown $\hat{DD}_{effective}$ uses a derived lower threshold $T_{low} = T_{recovery} \cdot 0.55$:
 
 $$\hat{DD}_{effective} = \begin{cases}
-\gamma_{high} \cdot DD_{max} & \text{if } \rho \geq T_{high} \\
-\left(1 - \gamma_{low} \cdot \frac{\rho - T_{low}}{T_{high} - T_{low}}\right) \cdot DD_{max} & \text{if } T_{low} \leq \rho < T_{high} \\
+0.25 \cdot DD_{max} & \text{if } \rho \geq T_{recovery} \\
+\left(1 - 0.6 \cdot \frac{\rho - T_{low}}{T_{recovery} - T_{low}}\right) \cdot DD_{max} & \text{if } T_{low} \leq \rho < T_{recovery} \\
 \frac{\rho}{T_{low}} \cdot DD_{max} & \text{if } \rho < T_{low}
 \end{cases}$$
 
@@ -160,67 +154,38 @@ Where $\alpha_{class} = 0.75$ (default class multiplier for non-common shares).
 
 ---
 
-## 7. Configuration Parameters
+## 7. Simplified Configuration Parameters
 
-The algorithm provides configurable parameters for adaptive tuning across different market conditions:
+The algorithm uses a reduced parameter set of **11 configurable parameters**:
 
 ### 7.1 Data Requirements
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `MIN_YEARS` | 10 | Minimum years of data required to calculate score |
+| `MIN_YEARS` | 10 | Minimum years of data required |
 
-### 7.2 Growth Configuration
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `GROWTH_WEIGHT` | 0.75 | Weight for growth in base calculation (0-1) |
-| `GROWTH_THRESHOLD` | 0.07 | Relative growth threshold (0.07 = 7%) |
-
-### 7.3 Consistency Configuration
+### 7.2 Growth & Consistency
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `CONSISTENCY_WEIGHT` | 0.55 | Weight for consistency in base calculation (0-1) |
-| `PROFIT_RATIO_WEIGHT` | 60 | Weight for profit positivity in consistency |
-| `POS_YOY_WEIGHT` | 40 | Weight for positive YoY in consistency |
+| `GROWTH_WEIGHT` | 0.75 | Weight for growth (consistency = 1 - growth) |
+| `GROWTH_THRESHOLD` | 0.07 | Growth threshold (7%) |
 
-### 7.4 Volatility Configuration
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `CV_RMSE_THRESHOLD` | 0.16 | CV-RMSE threshold to start penalizing |
-| `VOLATILITY_FLOOR` | 0.40 | Minimum volatility multiplier (0-1) |
-| `VOLATILITY_PENALTY` | 2.5 | Penalty multiplier for CV-RMSE exceeding threshold |
-
-### 7.5 Drawdown Configuration
+### 7.3 Volatility
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `RECOVERY_THRESHOLD_HIGH` | 0.45 | Recovery ratio for full forgiveness (0-1) |
-| `RECOVERY_THRESHOLD_LOW` | 0.25 | Recovery ratio for partial forgiveness (0-1) |
-| `DRAWDOWN_FLOOR` | 0.60 | Minimum drawdown multiplier (0-1) |
-| `DRAWDOWN_PENALTY_HIGH` | 0.25 | Multiplier when recovery >= high threshold |
-| `DRAWDOWN_PENALTY_LOW` | 0.40 | Forgiveness factor for partial recovery |
+| `VOLATILITY_THRESHOLD` | 0.16 | CV-RMSE threshold |
+| `VOLATILITY_FLOOR` | 0.40 | Minimum volatility multiplier |
 
-### 7.6 Liquidity Configuration
+### 7.4 Drawdown
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `LIQUIDITY_THRESHOLD` | 10,000,000 | R$ minimum liquidity threshold |
-| `LIQUIDITY_FLOOR` | 0.5 | Minimum liquidity multiplier (0-1) |
-
-### 7.7 Class and Penalty Configuration
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `CLASS_MULTIPLIER_NON_3` | 0.75 | Multiplier for tickers not ending in '3' |
-| `PROFIT_PENALTY` | 0.5 | Multiplier if any profit <= 0 |
-
-* *The current values in the model are tests and not the final product that will be used in a production environment*
+| `RECOVERY_THRESHOLD` | 0.45 | Recovery ratio for full forgiveness |
+| `DRAWDOWN_FLOOR` | 0.60 | Minimum drawdown multiplier |
 
 ---
-
 
 ## Variable Glossary
 
@@ -233,14 +198,16 @@ The algorithm provides configurable parameters for adaptive tuning across differ
 | $RMSE$ | Root mean square error |
 | $\rho$ | Recovery ratio |
 | $DD_{max}$ | Maximum drawdown |
-| $\Phi(P)$ | Fundamental Engine |
-| $\Omega(P)$ | Risk-Quality Engine |
-| $\Lambda(L,c)$ | Constraint Engine |
-| $M_{profit}$ | Profit Quality Gate |
-| $M_{vol}$ | Volatility Multiplier |
-| $M_{DD}$ | Drawdown Multiplier |
-| $M_{liq}$ | Liquidity Multiplier |
-| $M_{class}$ | Class Multiplier |
+| $\omega_{growth}$ | Growth weight parameter |
+| $T_{growth}$ | Growth threshold parameter |
+| $T_{cv}$ | CV-RMSE threshold parameter |
+| $F_{vol}$ | Volatility floor parameter |
+| $T_{recovery}$ | Recovery threshold parameter |
+| $F_{dd}$ | Drawdown floor parameter |
+| $T_{liq}$ | Liquidity threshold parameter |
+| $F_{liq}$ | Liquidity floor parameter |
+| $\alpha_{profit}$ | Profit penalty parameter |
+| $\alpha_{class}$ | Class penalty parameter |
 
 ---
 
