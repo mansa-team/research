@@ -12,7 +12,7 @@ semaphore = asyncio.Semaphore(10)
 tickers = [
     "WEGE3", "RADL3", "EGIE3", "ITUB3", "LREN3", "BBAS3", "VALE3",
     "EQTL3", "RENT3", "FLRY3", "LEVE3", "B3SA3", "PSSA3", "TOTS3",
-    "BBSE3", "TAEE11", "FRAS3", "SAPR11", "BRAP4", "CPFE3", "CSUD3",
+    "BBSE3", "TAEE11", "FRAS3", "SAPR3", "BRAP4", "CPFE3", "CSUD3",
     "SLCE3", "ODPV3", "PNVL3",
     "CMIG3", "MDIA3", "CXSE3", "GRND3", "PRIO3", "SMTO3", "UGPA3",
     "SBSP3", "ABCB4", "TIMS3", "VIVT3", "SANB11", "CSMG3", "YDUQ3",
@@ -54,8 +54,7 @@ async def fetch_all_data(tickers):
             hist_results.extend(await asyncio.gather(*tasks))
             if i + batch_size < len(tickers):
                 await asyncio.sleep(0.5)
-        
-        # Fetch fundamental in smaller batches
+                
         fund_results = []
         for i in range(0, len(unique_prefixes), batch_size):
             batch = unique_prefixes[i:i+batch_size]
@@ -125,19 +124,34 @@ for idx, ticker in enumerate(tickers):
     
     if len(profit10y_df) >= 10:
         profits = profit10y_df["LUCRO LIQUIDO"].astype(float).values
-        X = np.arange(len(profits)).reshape(-1, 1)
+        profits = np.where(np.isnan(profits), 0, profits)
+        valid_mask = profits > 0
+        if valid_mask.sum() < 10:
+            continue
+        profits = profits[valid_mask]
+        n_years = len(profits)
         
-        mean_profit = np.mean(profits)
-        
-        if mean_profit > 0:
+        if len(profits) >= 10:
+            X = np.arange(len(profits)).reshape(-1, 1)
+            mean_profit = np.mean(profits)
+            
+            # Linear regression on raw profits
             model = LinearRegression().fit(X, profits)
             slope = model.coef_[0]
+            relative_growth_linear = slope / mean_profit if mean_profit > 0 else 0
             
-            relative_growth = slope / mean_profit
+            # Log-linear regression for CAGR capture
+            log_profits = np.log(profits + 1)
+            log_model = LinearRegression().fit(X, log_profits)
+            log_slope = log_model.coef_[0]
+            cagr_equivalent = np.exp(log_slope) - 1
+            
+            # Growth score: use maximum of linear and log-linear (CAGR)
+            relative_growth = max(relative_growth_linear, cagr_equivalent)
             growth_score = min(100, max(0, (relative_growth / 0.07) * 100))
             
-            preds = model.predict(X)
-            residuals = profits - preds
+            # Volatility: use raw residuals normalized by mean (scale-invariant but captures oscillation)
+            residuals = profits - model.predict(X)
             cv_rmse = np.sqrt(np.mean(residuals**2)) / mean_profit
             
             volatility_penalty = max(0, cv_rmse - 0.15) * 2.0
@@ -155,10 +169,15 @@ for idx, ticker in enumerate(tickers):
             current_profit = profits[-1]
             max_profit = np.max(profits)
             
-            if max_profit > 0 and (current_profit / max_profit) >= 0.90:
+            recovery_ratio = current_profit / max_profit if max_profit > 0 else 0
+            
+            if recovery_ratio >= 0.90:
                 effective_dd = max_dd * 0.25
+            elif recovery_ratio >= 0.50:
+                forgiveness_factor = 0.6 * (recovery_ratio - 0.50) / 0.40
+                effective_dd = max_dd * (1 - forgiveness_factor)
             else:
-                effective_dd = max_dd
+                effective_dd = max_dd * (recovery_ratio / 0.50)
             
             m_dd = max(0.4, 1.0 - effective_dd)
             

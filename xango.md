@@ -33,11 +33,13 @@ $$
 
 #### Relative Growth ($S_{growth}$)
 
-Measures the OLS (Ordinary Least Squares) regression slope ($\beta$) normalized by mean profit ($\mu_p$), capped at a 7% relative growth threshold:
+Measures the OLS (Ordinary Least Squares) regression slope ($\beta$) normalized by mean profit ($\mu_p$), capped at a 7% relative growth threshold. Uses the maximum of both linear and log-linear (CAGR) approaches to capture both absolute growth and compound velocity:
 
 $$
-S_{growth}(P) = \min\left(100, \max\left(0, \frac{\beta}{0.07 \mu_p} \cdot 100\right)\right)
+S_{growth}(P) = \min\left(100, \max\left(0, \frac{\max(\beta / \mu_p, \; e^{\hat{\beta}} - 1)}{0.07} \cdot 100\right)\right)
 $$
+
+Where $\hat{\beta}$ is the slope from regressing $\ln(P)$ on time.
 
 #### Consistency ($S_{cons}$)
 
@@ -57,15 +59,33 @@ $$
 
 #### Volatility Multiplier ($M_{vol}$)
 
-Unlike standard deviation, $M_{vol}$ only penalizes the residuals of the trendline. If a stock grows perfectly linearly, it receives no penalty, regardless of how "fast" it moves.
+Unlike standard deviation, $M_{vol}$ only penalizes the residuals from the linear trend. If a stock grows perfectly linearly, it receives no penalty, regardless of how "fast" it moves. The CV-RMSE is calculated using raw residuals normalized by mean profit for scale-invariance while capturing all oscillation:
 
 $$
 M_{vol}(P) = \max\left(0.3, \;\; 1 - 2 \cdot \max\left(0, \frac{RMSE}{\mu_p} - 0.15\right)\right)
 $$
 
+Where $RMSE = \sqrt{\frac{1}{n} \sum (p_t - \hat{p}_t)^2}$ is the root mean square error from the linear trend.
+
 #### Recovery-Aware Drawdown ($M_{DD}$)
 
-This factor rewards "Anti-fragility." While it punishes large profit drops, it includes a 75% forgiveness factor for companies that demonstrate the resilience to recover to $\ge 90\%$ of their historical peak ($p_{max}$).
+This factor rewards "Anti-fragility." It uses continuous interpolation instead of a binary threshold to handle mature companies that stabilize below their all-time peak:
+
+$$
+M_{DD}(P) = \max\left(0.4, \;\; 1 - \hat{DD}_effective\right)
+$$
+
+Where the effective drawdown $\hat{DD}_effective$ is computed using continuous recovery forgiveness:
+
+$$
+\hat{DD}_effective} = \begin{cases}
+0.25 \cdot DD_{max} & \text{if } \rho \ge 0.90 \\
+(1 - 0.6 \frac{\rho - 0.50}{0.40}) \cdot DD_{max} & \text{if } 0.50 \le \rho < 0.90 \\
+\frac{\rho}{0.50} \cdot DD_{max} & \text{if } \rho < 0.50
+\end{cases}
+$$
+
+With $\rho = p_{current} / p_{max}$ being the recovery ratio. This creates a smooth transition from full penalty (0.4) at 50% recovery to full forgiveness (1.0) at 90%+ recovery.
 
 ### Constraint Engine: $\Lambda(L, c)$
 
