@@ -3,11 +3,22 @@ import numpy as np
 import requests
 from datetime import datetime
 
+selic = pd.DataFrame(requests.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados?formato=json").json())
+selic['valor'] = selic['valor'].astype(float)
+selic['valor medio 10y'] = selic['valor'].rolling(120, min_periods=120).mean().round(2)
+
 MIN_YEARS = 10
 
-CONSISTENCY_WEIGHT = 0.55 #consistency_w + growth_w > 1 but ok, used just for normalization
+# should be adjusted based on the needs for
+# - growth companies for short time: capital apport for short term, 5 years
+# - consistent companies over time: capital apport for more than 5 years
+CONSISTENCY_WEIGHT = 0.85
 GROWTH_WEIGHT = 0.75
-GROWTH_THRESHOLD = 0.10
+
+GROWTH_THRESHOLD_BASELINE = 0.10
+GROWTH_K = 4
+SELIC_RATE = selic.iloc[-1]['valor']
+SELIC_BASELINE = selic.iloc[-1]['valor medio 10y']
 
 VOLATILITY_THRESHOLD = 0.16
 VOLATILITY_FLOOR = 0.40
@@ -54,8 +65,9 @@ for idx, row in df[df["TICKER"].isin(TICKERS)].iterrows():
         
         mean = np.mean(profits_10y)
         slope = np.polyfit(x, profits_10y, 1)[0]
-        log_slope = np.polyfit(x, np.log(np.maximum(profits_10y, 0) + 1), 1)[0]
-        growth = min(100, max(0, max(slope / mean, np.exp(log_slope) - 1) / GROWTH_THRESHOLD * 100))
+        growth_threshold = GROWTH_THRESHOLD_BASELINE * (SELIC_BASELINE / SELIC_RATE)
+        raw_growth = slope / mean
+        growth = 50 * (np.tanh(GROWTH_K * (raw_growth - growth_threshold)) + 1)
 
         pred = np.polyval(np.polyfit(x, profits_10y, 1), x)
         cv_rmse = np.sqrt(np.mean((profits_10y - pred) ** 2)) / mean
