@@ -87,4 +87,21 @@ after creating the vectors for the epsilon analysis, just numpy.corrcoef the sto
 
 
 possible idea: have this as an advanced user feature, letting the user compare 2 stocks and see if they are correlated by any way, also release this in the db?
+
+
+patch 1:
+instead of using one factor regression for the estimations, which can be overfitted easily and can be noisy somtimes because it only assumes that the market is the only driver for the brazilian market, the ideal proposal is to use some other measurement at the same time period to help me regression properly evaluate the market relevance's in the composal of the specific components from the regression. analyzing that, the addition of selic rates have been proposed, already being used in the workflow for the mansa project, would be a great help in the regression, reducing the noise from the correlations between epsilons in the stocks i, j and give a clearer overview on profits from sectors like banks that are heavily correlated with selic rates.
+for that, we need to get a vector for selic, that is composed for the 10 years of data for selic, the same length as the market factor vector:
+    S = S['valor'].resample('Y').mean()
+
+for the regression, the new format is:
+    s_i(t) = alpha_i + betaM_i * M(t) + betaS_i * S(t) + epsilon_i(t)
+
+where betaS_i indicates how correlated the stock is to the change of the selic rates.
+
+other important thing to notice is that, since the sample data is small, only 10 data points per stock to represent profits, we are working with a really constrained environment, for that, its proposed the usage of a different algorithm for regression other than OLS, because OLS with my 10 data points and k=2 only leaves only 7 degress of freedom for corretions and i need to treat N stocks, in which, OLS might suck to predict beta values, creating any relation between stocks, just noise.
+
+the best alternative is to use a hierarchical bayesian regression algorithm that borrows information across all N stocks simultaneously. instead of fitting each stock independently (OLS), hierarchical bayesian learns a group-level distribution for beta across all stocks, then shrinks each stock's estimate toward the group mean. This works because all stocks contribute to estimating the shared distribution for beta, increasing the sample size from T=10 to T*N data points.
+
+the current only built-in implementation for the model is inside the pymc lib, which is painfully slow because of monte carlo, as an alternative, the usage of statsmodels mixedlm that implements the same hierarchical structure via REML instead of MCMC sampling, that, at my data volume, is mathematically similar while running way faster (120s vs 10ms).
 """
