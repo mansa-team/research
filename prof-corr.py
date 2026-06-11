@@ -104,4 +104,7 @@ other important thing to notice is that, since the sample data is small, only 10
 the best alternative is to use a hierarchical bayesian regression algorithm that borrows information across all N stocks simultaneously. instead of fitting each stock independently (OLS), hierarchical bayesian learns a group-level distribution for beta across all stocks, then shrinks each stock's estimate toward the group mean. This works because all stocks contribute to estimating the shared distribution for beta, increasing the sample size from T=10 to T*N data points.
 
 the current only built-in implementation for the model is inside the pymc lib, which is painfully slow because of monte carlo, as an alternative, the usage of statsmodels mixedlm that implements the same hierarchical structure via REML instead of MCMC sampling, that, at my data volume, is mathematically similar while running way faster (120s vs 10ms).
+
+
+the final architecture also changes, instead of using the numpy.corrcoef, which is a pearson, theres a need to use the spearman correlation from scipy, that analyzes if a the vectors are actually moving in the same direction and is better at dealing with a low amount of data (10 data points), in which, for numpy.corrcoef, would inflate values according to some outlier or intense growth in profits at some point.
 """
