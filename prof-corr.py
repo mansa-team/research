@@ -2,7 +2,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-np.random.seed = 42
+from scipy.signal import detrend
+
+np.random.seed(42)
 
 s1 = np.random.uniform(1e9, 1e11, size=10)
 s2 = np.random.uniform(1e9, 1e11, size=10)
@@ -24,7 +26,7 @@ y = profit
 the profits would be scaled to be measured in a similar space
 profits that grow together might indicate a market relation, in which the model would adapt the weight allocation based on that corr score
 
-the evaluation of the difference from the growth of profits from x and x(t-1) or the direct comparasion between the y1 and y2, meaning that a MSE loss function would be used to evaluate a loss for the corr, the only problem is that, i fear that the scaler might not be able to adapt this properly or it would be able to catch the corr between stocks. or that a loss that is bigger between 2 points mean that the profit from the stock i might have been lower, not necessarily indicating a correlation
+the evaluation of the difference from the growth of profits from t and t-1 or the direct comparasion between the y1 and y2, meaning that a MSE loss function would be used to evaluate a loss for the corr, the only problem is that, i fear that the scaler might not be able to adapt this properly or it would be able to catch the corr between stocks. or that a loss that is bigger between 2 points mean that the profit from the stock i might have been lower, not necessarily indicating a correlation
 
 in a good makret, where stokcs grow their profits over and over, a profit correlation might be overfit, because the market will just be in a good phase, prioritizing stocks with less growth between each other, ruining the portfolios performance according to the mansas strategy
 
@@ -69,11 +71,20 @@ possible solutions for the healthy market approach:
 possible fixes to the algo:
 mse measures the difference in distance between points y1 and y2, it doesnt measure the correlation in their movements, numpy have a builtin function for that, numpy.corrcoef that is able to measure the change in the profits overtime and should be used over the mse schema.
 
-to evaluate the actual growth of a stock independent of the market's noise, allowing a i, j comparasion between stocks, the scipy.detrend linear function is used to evaluate the outliers in the i, j stocks more easily, this allows for co-cyclical evaluations that are still inherently associated with the market movement, to minimize the beta out of the data, analyzing both stocks real growth and trends between each other theres a need to remove the market association between the selected stocks, for that:
+to evaluate the actual growth of a stock independent of its own linear trend and market noise, allowing a i, j comparasion between stocks, theres a need for the scipy.detrend linear function to be used to evaluate the the cyclical deviations in the i, j easily, this allows for co-cyclical evaluations that are still inherently associated with the market movement and to minimize the beta out of the data, analyzing both stocks real growth and trends between each other theres a need to remove the market association between the selected stocks we need to do regression in the detrended vector to extract the real identity of the function, for that:
 
-the market factor is calculated to evaluate the commom signals shared between stocks using the sum of detrend from all stocks for that. the market factor is calcualted at every t point, representing the situation of the market at that time point M(t)
+the market factor is calculated to evaluate the commom signals shared between stocks using the sum of detrend from all stocks for that. the market factor is calcualted at every t point, representing the situation of the market at that time point M(t) that will be discounted further from each stock to make for a market noise free analysis
     M(t) = (1/N) sum{k=1}^{N} s_k(t)
 
-after calculating the market factor for the stock, theres a need to find the beta (market corr factor) and epsilon (independent factor) from a stock
-...
+after calculating the market factor for the stock, theres a need to find the beta (market corr factor), alpha (intercept) and epsilon (the stocks true relations, the idiosyncratic residual) for the stock, for that, regression is used to find the values for beta and alpha, so it finds the matching function for the detrend vector.
+    s_i(t) = alpha_i + beta_i * M(t) + epsilon_i(t)
+
+where the epsilon is the idiosyncratic residual, meaning its the stocks true moving identity and its associated signal. for the regression, the OLS function is used so the alpha and beta can be estimated.
+to calculate the epsilon, we use
+    epsilon_i(t) = s_i(t) - (alpha(t) + beta(t) * M(t))
+
+after creating the vectors for the epsilon analysis, just numpy.corrcoef the stocks i and j, getting a final corr for the stocks profits.
+
+
+possible idea: have this as an advanced user feature, letting the user compare 2 stocks and see if they are correlated by any way, also release this in the db?
 """
