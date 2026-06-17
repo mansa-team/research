@@ -1,18 +1,20 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 from datetime import datetime
 
 from scipy.signal import detrend
+from scipy.stats import spearmanr
+from statsmodels.regression.mixed_linear_model import MixedLM
 
 import requests
 
 current_year = datetime.now().year
-years_range = [str(y) for y in range(current_year - 1, current_year - 11, -1)]
+years_range = [str(y) for y in range(current_year - 10, current_year)]
 
 # selic data
-
 selic = pd.DataFrame(requests.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados?formato=json").json())
 selic['valor'] = selic['valor'].astype(float)
 selic['data'] = pd.to_datetime(selic['data'])
@@ -25,27 +27,86 @@ selic.index = selic.index.astype(str)
 selic = selic.reindex(years_range)
 
 # ticker data
-
 tickers = pd.DataFrame(requests.get('http://localhost:3200/stocks/fundamental?fields=XANGO INVESTING SCORE&dates=2026-06-15').json()['data'])
 
-tickers = tickers[(tickers["XANGO INVESTING SCORE"] > 60) & (tickers["TICKER"].str.endswith("3"))]
-tickers = tickers['TICKER'].to_list()
-tickers = ", ".join(tickers)
+tickers = tickers[(tickers["XANGO INVESTING SCORE"] > 0) & (tickers["TICKER"].str.endswith("3"))]
+selected_tickers = tickers[(tickers["XANGO INVESTING SCORE"] > 60) & (tickers["TICKER"].str.endswith("3"))]
+tickers = ", ".join(tickers['TICKER'].to_list())
 
-profits = pd.DataFrame(requests.get(f'http://localhost:3200/stocks/historical?search={tickers}').json()['data'])
-
-cols = [col for col in profits.columns if col.startswith("LUCRO LIQUIDO") or col in ("TICKER")]
-profits = profits[cols].set_index('TICKER').dropna(axis=1, how='all')
+profits = pd.DataFrame(requests.get(f'http://localhost:3200/stocks/historical?fields=LUCRO LIQUIDO&search={tickers}').json()['data'])
+profits = profits.drop(columns={"NOME"}).set_index('TICKER')
 profits.columns = profits.columns.str.extract(r'(\d+)')[0]
 
-profits_10y = profits[years_range]
+profits_10y = profits[years_range].dropna()
+
+selected_tickers = [t for t in selected_tickers['TICKER'].tolist() if t in profits_10y.index]
 
 # data engineering
-
-log_profits = np.log(profits_10y.values.astype(float) + 1)
+log_profits = np.log(np.maximum(profits_10y.values.astype(float), 1))
 detrended = np.apply_along_axis(detrend, 1, log_profits)
 
+selected_log_profits = np.log(profits_10y.loc[selected_tickers].values.astype(float) + 1)
+selected_detrended = np.apply_along_axis(detrend, 1, selected_log_profits)
 
+selic_standardized = (selic.values - selic.values.mean()) / selic.values.std()
+selic_standardized = selic_standardized * detrended.std()
+
+M = detrended.mean(axis=0)
+
+# regression
+N_stocks = selected_detrended.shape[0]
+T_years = selected_detrended.shape[1]
+
+regression_df = pd.DataFrame({
+    'detrended_value': selected_detrended.flatten(),
+    'M': np.tile(M, N_stocks),
+    'S': np.tile(selic_standardized.flatten(), N_stocks),
+    'tickers': np.repeat(selected_tickers, T_years),
+    'time_idx': np.tile(np.arange(T_years), N_stocks)
+})
+
+result = MixedLM.from_formula(
+    'detrended_value ~ M + S',
+    groups='tickers',
+    re_formula='~M',
+    data=regression_df
+).fit(reml=True, method='lbfgs')
+
+# epsilon extraction
+fixed_params = result.fe_params
+alpha = fixed_params['Intercept']
+beta_m_fixed = fixed_params['M']
+beta_s_fixed = fixed_params['S']
+
+random_effects = result.random_effects
+
+epsilon = np.zeros_like(selected_detrended)
+betas_m = np.zeros(N_stocks)
+
+for i, ticker in enumerate(selected_tickers):
+    re = random_effects[ticker]
+    beta_m_i = beta_m_fixed + re['M']
+    alpha_i = alpha + re['tickers']
+    
+    epsilon[i] = selected_detrended[i] - (alpha_i + beta_m_i * M + beta_s_fixed * selic_standardized.flatten())
+    betas_m[i] = beta_m_i
+
+# spearman correlation
+corr, _ = spearmanr(epsilon, axis=1)
+np.fill_diagonal(corr, 1.0)
+
+corr_df = pd.DataFrame(corr, index=selected_tickers, columns=selected_tickers)
+
+plt.figure(figsize=(12, 10))
+sns.heatmap(corr_df, cmap="coolwarm", center=0, annot=True, 
+            fmt=".2f", annot_kws={"size": 7},
+            xticklabels=True, yticklabels=True,
+            cbar_kws={"label": "Spearman ρ"})
+plt.tight_layout()
+plt.savefig("epsilon_correlation.png", dpi=150)
+plt.close()
+
+# drop correlated
 """
 to be used to compose the views of the black-litterman together with the xango investing scores
 
@@ -141,4 +202,6 @@ the final architecture also changes, instead of using the numpy.corrcoef, which 
 
 patch 2:
 use np.log in the profits vector before using the detrend, to properly evaluate the exponential behavior of profits in a strategy, that, when using a detrend model, would remove the part in which the stock grows the most, tanking most scores.
+
+used the market factor as the factor between all stocks instead of the subset, because the subset was too small, causing the linear regression to not converge
 """
