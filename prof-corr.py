@@ -2,18 +2,49 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+from datetime import datetime
+
 from scipy.signal import detrend
 
-np.random.seed(42)
+import requests
 
-s1 = np.random.uniform(1e9, 1e11, size=10)
-s2 = np.random.uniform(1e9, 1e11, size=10)
+current_year = datetime.now().year
+years_range = [str(y) for y in range(current_year - 1, current_year - 11, -1)]
 
-years = np.arange(1, 11)
-plt.plot(years, s1, marker='o')
-plt.plot(years, s2, marker='s')
-plt.xticks(years)
-plt.show()
+# selic data
+
+selic = pd.DataFrame(requests.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados?formato=json").json())
+selic['valor'] = selic['valor'].astype(float)
+selic['data'] = pd.to_datetime(selic['data'])
+
+selic = selic.set_index('data')
+selic = selic.resample('YE').mean()
+selic.index = selic.index.year
+
+selic.index = selic.index.astype(str)
+selic = selic.reindex(years_range)
+
+# ticker data
+
+tickers = pd.DataFrame(requests.get('http://localhost:3200/stocks/fundamental?fields=XANGO INVESTING SCORE&dates=2026-06-15').json()['data'])
+
+tickers = tickers[(tickers["XANGO INVESTING SCORE"] > 60) & (tickers["TICKER"].str.endswith("3"))]
+tickers = tickers['TICKER'].to_list()
+tickers = ", ".join(tickers)
+
+profits = pd.DataFrame(requests.get(f'http://localhost:3200/stocks/historical?search={tickers}').json()['data'])
+
+cols = [col for col in profits.columns if col.startswith("LUCRO LIQUIDO") or col in ("TICKER")]
+profits = profits[cols].set_index('TICKER').dropna(axis=1, how='all')
+profits.columns = profits.columns.str.extract(r'(\d+)')[0]
+
+profits_10y = profits[years_range]
+
+# data engineering
+
+log_profits = np.log(profits_10y.values.astype(float) + 1)
+detrended = np.apply_along_axis(detrend, 1, log_profits)
+
 
 """
 to be used to compose the views of the black-litterman together with the xango investing scores
@@ -107,4 +138,7 @@ the current only built-in implementation for the model is inside the pymc lib, w
 
 
 the final architecture also changes, instead of using the numpy.corrcoef, which is a pearson, theres a need to use the spearman correlation from scipy, that analyzes if a the vectors are actually moving in the same direction and is better at dealing with a low amount of data (10 data points), in which, for numpy.corrcoef, would inflate values according to some outlier or intense growth in profits at some point.
+
+patch 2:
+use np.log in the profits vector before using the detrend, to properly evaluate the exponential behavior of profits in a strategy, that, when using a detrend model, would remove the part in which the stock grows the most, tanking most scores.
 """
