@@ -12,8 +12,8 @@ MIN_YEARS = 10
 # should be adjusted based on the needs for
 # - growth companies for short time: capital apport for short term, 5 years
 # - consistent companies over time: capital apport for more than 5 years
-CONSISTENCY_WEIGHT = 0.85
 GROWTH_WEIGHT = 0.75
+CONSISTENCY_WEIGHT = 0.45
 
 GROWTH_THRESHOLD_BASELINE = 0.10
 GROWTH_K = 4
@@ -36,12 +36,12 @@ TICKERS = [
     "MGLU3", "AURE3", "KEPL3", "CSAN3", "UNIP6", "TRPL4", "BPAC11", "CSNA3",
     "KLBN11", "DXCO3", "CYRE3", "DIRR3", "ENGI11", "BRKM5", "MYPK3", "OIBR3",
     "TASA4", "PETZ3", "CASH3", "RAIZ4", "LIGT3", "GOLL4", "AZUL4", "USIM5",
-    "JALL3", "NGRD3", "AERI3", "BHIA3", "HBSA3"
+    "JALL3", "NGRD3", "AERI3", "BHIA3", "HBSA3", "BBDC3", "SANB3"
 ]
 TICKERS_SEARCH = [t[:4] for t in TICKERS]
 TICKERS_SEARCH = ", ".join(TICKERS_SEARCH)
 
-fund = pd.DataFrame(requests.get(f"http://localhost:3200/stocks/fundamental?search={TICKERS_SEARCH}&fields=LIQUIDEZ MEDIA DIARIA&dates=2026-04-16").json()["data"])
+fund = pd.DataFrame(requests.get(f"http://localhost:3200/stocks/fundamental?search={TICKERS_SEARCH}&fields=LIQUIDEZ MEDIA DIARIA&dates=2026-06-18").json()["data"])
 hist = pd.DataFrame(requests.get(f"http://localhost:3200/stocks/historical?search={TICKERS_SEARCH}&fields=LUCRO LIQUIDO").json()["data"])
 df = pd.merge(fund, hist).drop(columns={"LUCRO LIQUIDO 999"})
 
@@ -93,6 +93,11 @@ for idx, row in df[df["TICKER"].isin(TICKERS)].iterrows():
         m_dd = min(1, m_dd)
 
         base = growth * GROWTH_WEIGHT + consistency * CONSISTENCY_WEIGHT
+        
+        g_elig = 0.5 * (np.tanh((growth - 50) / 5) + 1)
+        c_elig = 0.5 * (np.tanh((consistency - 80) / 3) + 1)
+        base *= 1.0 + 0.20 * g_elig * c_elig
+
         score = min(100, max(0, base * m_vol * m_dd))
         
         m_liq = max(0.5, np.sqrt(min(1, total_liq.loc[row["NOME"]] / 10_000_000))) if total_liq.loc[row["NOME"]] < 10_000_000 else 1

@@ -7,9 +7,27 @@ from datetime import datetime
 
 from scipy.signal import detrend
 from scipy.stats import spearmanr
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import squareform
 from statsmodels.regression.mixed_linear_model import MixedLM
 
 import requests
+
+def select_diversified_stocks(corr_matrix, tickers, scores, K):
+    dist = np.sqrt(np.clip((1 - corr_matrix) / 2.0, 0, 1))
+
+    condensed = squareform(dist, checks=False)
+    link = linkage(condensed, method='average')
+
+    labels = fcluster(link, t=K, criterion='maxclust')
+
+    selected = []
+    for c in range(1, K + 1):
+        members = [i for i, lbl in enumerate(labels) if lbl == c]
+        best = max(members, key=lambda i: scores[tickers[i]])
+        selected.append(tickers[best])
+
+    return selected
 
 current_year = datetime.now().year
 years_range = [str(y) for y in range(current_year - 10, current_year)]
@@ -30,7 +48,7 @@ selic = selic.reindex(years_range)
 tickers = pd.DataFrame(requests.get('http://localhost:3200/stocks/fundamental?fields=XANGO INVESTING SCORE&dates=2026-06-15').json()['data'])
 
 tickers = tickers[(tickers["XANGO INVESTING SCORE"] > 0) & (tickers["TICKER"].str.endswith("3"))]
-selected_tickers = tickers[(tickers["XANGO INVESTING SCORE"] > 60) & (tickers["TICKER"].str.endswith("3"))]
+selected_tickers_df = tickers[(tickers["XANGO INVESTING SCORE"] > 60) & (tickers["TICKER"].str.endswith("3"))]
 tickers = ", ".join(tickers['TICKER'].to_list())
 
 profits = pd.DataFrame(requests.get(f'http://localhost:3200/stocks/historical?fields=LUCRO LIQUIDO&search={tickers}').json()['data'])
@@ -39,7 +57,7 @@ profits.columns = profits.columns.str.extract(r'(\d+)')[0]
 
 profits_10y = profits[years_range].dropna()
 
-selected_tickers = [t for t in selected_tickers['TICKER'].tolist() if t in profits_10y.index]
+selected_tickers = [t for t in selected_tickers_df['TICKER'].tolist() if t in profits_10y.index]
 
 # data engineering
 log_profits = np.log(np.maximum(profits_10y.values.astype(float), 1))
@@ -92,7 +110,7 @@ for i, ticker in enumerate(selected_tickers):
     betas_m[i] = beta_m_i
 
 # spearman correlation
-corr, _ = spearmanr(epsilon, axis=1)
+corr, pval = spearmanr(epsilon.T)
 np.fill_diagonal(corr, 1.0)
 
 corr_df = pd.DataFrame(corr, index=selected_tickers, columns=selected_tickers)
@@ -106,7 +124,16 @@ plt.tight_layout()
 plt.savefig("epsilon_correlation.png", dpi=150)
 plt.close()
 
-# drop correlated
+# drop correlated using hrp clustering + pick best per cluster
+scores = dict(zip(selected_tickers_df['TICKER'], selected_tickers_df['XANGO INVESTING SCORE']))
+final_tickers = select_diversified_stocks(corr, selected_tickers, scores, K=16)
+
+for t in final_tickers:
+    print(f"  {t}: {scores[t]:.1f}")
+
+print(f"WEGE3 in selected_tickers: {'WEGE3' in selected_tickers}")
+print(f"WEGE3 in scores: {'WEGE3' in scores}")
+
 """
 to be used to compose the views of the black-litterman together with the xango investing scores
 
