@@ -7,27 +7,9 @@ from datetime import datetime
 
 from scipy.signal import detrend
 from scipy.stats import spearmanr
-from scipy.cluster.hierarchy import linkage, fcluster
-from scipy.spatial.distance import squareform
 from statsmodels.regression.mixed_linear_model import MixedLM
 
 import requests
-
-def select_diversified_stocks(corr_matrix, tickers, scores, K):
-    dist = np.sqrt(np.clip((1 - corr_matrix) / 2.0, 0, 1))
-
-    condensed = squareform(dist, checks=False)
-    link = linkage(condensed, method='average')
-
-    labels = fcluster(link, t=K, criterion='maxclust')
-
-    selected = []
-    for c in range(1, K + 1):
-        members = [i for i, lbl in enumerate(labels) if lbl == c]
-        best = max(members, key=lambda i: scores[tickers[i]])
-        selected.append(tickers[best])
-
-    return selected
 
 current_year = datetime.now().year
 years_range = [str(y) for y in range(current_year - 10, current_year)]
@@ -45,7 +27,7 @@ selic.index = selic.index.astype(str)
 selic = selic.reindex(years_range)
 
 # ticker data
-tickers = pd.DataFrame(requests.get('http://localhost:3200/stocks/fundamental?fields=XANGO INVESTING SCORE&dates=2026-06-15').json()['data'])
+tickers = pd.DataFrame(requests.get('http://localhost:3200/stocks/fundamental?fields=XANGO INVESTING SCORE&dates=2026-06-29').json()['data'])
 
 tickers = tickers[(tickers["XANGO INVESTING SCORE"] > 0) & (tickers["TICKER"].str.endswith("3"))]
 selected_tickers_df = tickers[(tickers["XANGO INVESTING SCORE"] > 60) & (tickers["TICKER"].str.endswith("3"))]
@@ -124,15 +106,7 @@ plt.tight_layout()
 plt.savefig("epsilon_correlation.png", dpi=150)
 plt.close()
 
-# drop correlated using hrp clustering + pick best per cluster
-scores = dict(zip(selected_tickers_df['TICKER'], selected_tickers_df['XANGO INVESTING SCORE']))
-final_tickers = select_diversified_stocks(corr, selected_tickers, scores, K=16)
-
-for t in final_tickers:
-    print(f"  {t}: {scores[t]:.1f}")
-
-print(f"WEGE3 in selected_tickers: {'WEGE3' in selected_tickers}")
-print(f"WEGE3 in scores: {'WEGE3' in scores}")
+# use log profits for the corr drop
 
 """
 to be used to compose the views of the black-litterman together with the xango investing scores
